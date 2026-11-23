@@ -1,3 +1,6 @@
+<img width="800" height="530" alt="image" src="https://github.com/user-attachments/assets/8ddd5187-dbbc-457e-8a39-7997d0916a03" />
+
+
 # DB Explorer: Read-Only SQLite Browser & Character Map
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
@@ -7,7 +10,7 @@
 
 > *"A fast, safe, desktop explorer for large SQLite databases, with a one-page Character Map and XUnity-ready exports for Princess Connect! Re:Dive master data."*
 
-<!-- Add a screenshot here, e.g. ![DB Explorer](assets/screenshot.png) --><img width="1408" height="792" alt="image" src="https://github.com/user-attachments/assets/571c979b-1f2d-418d-98f7-40091c0d2491" />
+<!-- Add a screenshot here, e.g. ![DB Explorer](assets/screenshot.png) -->
 
 
 ---
