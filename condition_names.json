@@ -1,0 +1,9 @@
+{
+  "_comment": "ชื่อเงื่อนไขที่แก้เองได้ — วางไฟล์นี้ข้าง dbexplorer_app.py  |  Editable condition names — keep this file next to dbexplorer_app.py. Key = \"<action_type>:<code>\" or just \"<code>\". Value = text or {\"th\": \"...\", \"en\": \"...\"}. The grey [T28 · 741] tag on each condition row shows the type and code to use.",
+  "28:741":  {"th": "เมื่อมีเพื่อนร่วมทีมที่พลังโจมตีกายภาพสูงกว่าตัวเอง", "en": "If an ally has higher physical attack power than me"},
+  "28:1900": {"th": "เมื่อตัวเองมีบาเรียอยู่", "en": "While a barrier is active on myself"},
+  "28:1211": {"th": "เมื่อใช้ครั้งแรก", "en": "On first use"},
+  "28:1221": {"th": "", "en": ""},
+  "45:1":    {"th": "เมื่อใช้ครั้งแรก", "en": "On first use"},
+  "45:2":    {"th": "เมื่อใช้ครั้งแรก (แบบ 2)", "en": "On first use (type 2)"}
+}
