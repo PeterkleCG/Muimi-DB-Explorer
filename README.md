@@ -7,7 +7,8 @@
 
 > *"A fast, safe, desktop explorer for large SQLite databases, with a one-page Character Map and XUnity-ready exports for Princess Connect! Re:Dive master data."*
 
-<!-- Add a screenshot here, e.g. ![DB Explorer](assets/screenshot.png) -->
+<!-- Add a screenshot here, e.g. ![DB Explorer](assets/screenshot.png) --><img width="1408" height="792" alt="image" src="https://github.com/user-attachments/assets/571c979b-1f2d-418d-98f7-40091c0d2491" />
+
 
 ---
 
