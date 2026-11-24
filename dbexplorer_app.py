@@ -5,13 +5,13 @@ DB Explorer (Desktop) — โปรแกรมหน้าต่างสำห
 รัน:      python dbexplorer_app.py [ไฟล์.db]      (หรือลากไฟล์ .db มาวางบนหน้าต่าง)
 เปิดไฟล์แบบอ่านอย่างเดียวเสมอ — ไม่แก้ไขข้อมูลต้นฉบับ
 """
-import csv, os, re, sqlite3, sys, time
+import csv, os, re, sqlite3, sys, time, unicodedata
 from urllib.parse import quote
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QPoint, QRect, QSettings, QSize, Qt, QUrl,
                             QThread, QTimer, Signal)
 from PySide6.QtGui import (QAction, QColor, QFont, QKeySequence, QShortcut, QSyntaxHighlighter,
-                           QTextCharFormat, QGuiApplication, QIcon)
+                           QTextCharFormat, QGuiApplication)
 from PySide6.QtWidgets import (QListWidgetItem, QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDockWidget,
                                QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
@@ -114,6 +114,27 @@ def like_arg(s):
 
 
 # ----------------------------------------------------------------------------- database layer
+def _nk(s):
+    """ปรับข้อความให้เทียบกันได้: NFKC (เช่น （） ↔ ()) + ตัวพิมพ์เล็ก"""
+    return unicodedata.normalize("NFKC", s or "").strip().casefold()
+
+
+def load_aliases():
+    """unit_names.txt — บรรทัดละ  ชื่อญี่ปุ่น=คีย์เวิร์ด1;คีย์เวิร์ด2;...  ใช้เป็นคำค้นเท่านั้น (ไม่เปลี่ยนชื่อที่แสดง)"""
+    for base in (os.path.dirname(os.path.abspath(__file__)), os.path.dirname(os.path.abspath(sys.executable)), os.getcwd()):
+        f = os.path.join(base, "unit_names.txt")
+        if os.path.isfile(f):
+            amap = {}
+            with open(f, encoding="utf-8-sig") as fh:
+                for ln in fh:
+                    if "=" not in ln: continue
+                    jp, rest = ln.rstrip("\r\n").split("=", 1)
+                    kws = [k.strip() for k in rest.split(";") if k.strip()]
+                    if jp.strip() and kws: amap.setdefault(_nk(jp), []).extend(kws)
+            return amap, f
+    return {}, None
+
+
 class DB:
     def __init__(self):
         self.path = None
@@ -121,6 +142,7 @@ class DB:
         self.colmap = {}
         self.names = {}
         self.size = 0
+        self.aliases, self.sblob, self.extra, self.jpnames, self.alias_file = {}, {}, {}, {}, None
 
     def connect(self):
         uri = "file:" + quote(os.path.abspath(self.path).replace("\\", "/")) + "?mode=ro"
@@ -157,7 +179,26 @@ class DB:
             self.names = {r[0]: r[1] for r in c.execute("select unit_id,unit_name from unit_profile")}
         except sqlite3.Error:
             pass
+        self.aliases, self.sblob, self.extra, self.jpnames = {}, {}, {}, {}
+        amap, self.alias_file = load_aliases()
+        try: self.jpnames = {r[0]: r[1] for r in c.execute("select unit_id, unit_name_jp from unit_data")}
+        except sqlite3.Error: pass
+        for uid, nm in self.names.items():
+            kws = amap.get(_nk(self.jpnames.get(uid)), [])
+            self.aliases[uid] = kws
+            self.extra[uid] = " ".join([self.jpnames.get(uid) or ""] + kws).strip()
+            self.sblob[uid] = _nk(" ".join([str(uid), nm or "", self.extra[uid]]))
         c.close()
+
+    def expand_terms(self, text):
+        """คำค้นที่ตรงกับคีย์เวิร์ดชื่อตัวละครเป๊ะๆ → เพิ่มชื่อญี่ปุ่นและชื่ออังกฤษของตัวละครนั้นเข้าไปในการค้นหา"""
+        k = _nk(text); out = [text]
+        if len(k) < 2: return out
+        for uid, kws in self.aliases.items():
+            if any(_nk(x) == k for x in kws):
+                for x in (self.jpnames.get(uid), self.names.get(uid)):
+                    if x and x not in out: out.append(x)
+        return out[:6]
 
     def columns(self, c, name):
         info = c.execute("pragma table_info(%s)" % q(name)).fetchall()
@@ -236,17 +277,17 @@ class DB:
         finally:
             c.close()
 
-    def search_all(self, text):
-        c = self.connect(); hits = []; t0 = time.time(); like = like_arg(text)
+    def search_all(self, text, extra=()):
+        c = self.connect(); hits = []; t0 = time.time(); likes = [like_arg(x) for x in (text,) + tuple(extra)]
         try:
             for t in self.tables:
                 if t["rows"] <= 0:
                     continue
                 cols = self.columns(c, t["name"])
-                cond = " OR ".join("CAST(%s AS TEXT) LIKE ? ESCAPE '\\'" % q(x) for x in cols)
+                cond = " OR ".join("CAST(%s AS TEXT) LIKE ? ESCAPE '\\'" % q(x) for x in cols for _ in likes)
                 try:
                     n = c.execute("select count(*) from (select 1 from %s where %s limit 1000)" % (q(t["name"]), cond),
-                                  [like] * len(cols)).fetchone()[0]
+                                  [l for x in cols for l in likes]).fetchone()[0]
                 except sqlite3.Error:
                     continue
                 if n:
@@ -673,16 +714,18 @@ class SearchTab(QWidget):
         lay.addWidget(self.res, 1)
         lay.addWidget(lbl(tt("ดับเบิลคลิกผลลัพธ์เพื่อเปิดตารางพร้อมค้นหาคำนั้น", "Double-click a result to open the table with that search applied"), mute=True))
         b.clicked.connect(self.go); self.ed.returnPressed.connect(self.go)
-        self.res.cellDoubleClicked.connect(lambda r, c: self.win.open_table(self.res.item(r, 0).text(), search=self.ed.text()))
+        self.last_terms = []
+        self.res.cellDoubleClicked.connect(lambda r, c: self.win.open_table(self.res.item(r, 0).text(), search=(self.last_terms[1] if len(self.last_terms) > 1 else self.ed.text())))
 
     def go(self):
         t_ = self.ed.text().strip()
         if not t_ or not self.win.db.path: return
         self.info.setText(tt("⏳ กำลังค้นหาทุกตาราง…", "⏳ Searching all tables…"))
-        t = Task(lambda: self.win.db.search_all(t_), self); self.win.keep(t)
+        terms = self.win.db.expand_terms(t_); self.last_terms = terms
+        t = Task(lambda: self.win.db.search_all(terms[0], terms[1:]), self); self.win.keep(t)
         def done(res, err):
             if err: self.info.setText("⚠ " + err); return
-            hits, ms = res; self.info.setText(tt("พบใน %d ตาราง · %d ms", "Found in %d tables · %d ms") % (len(hits), ms)); self.res.setRowCount(len(hits))
+            hits, ms = res; self.info.setText(tt("พบใน %d ตาราง · %d ms", "Found in %d tables · %d ms") % (len(hits), ms) + (("  ·  " + tt("รวมคำค้น: ", "also searched: ") + ", ".join(terms[1:])) if len(terms) > 1 else "")); self.res.setRowCount(len(hits))
             for i, (n, c) in enumerate(hits):
                 self.res.setItem(i, 0, QTableWidgetItem(n)); it = QTableWidgetItem("1000+" if c >= 1000 else str(c)); self.res.setItem(i, 1, it)
         t.done.connect(done); t.start()
@@ -874,8 +917,7 @@ def mark_label(desc):
     w = m.group(1)
     return "[%s]" % (MARK_EN.get(w, w) if LANG == "en" else MARK_TH.get(w, w))
 _TGT = {2: ("สุ่ม", "Random"), 4: ("หลังสุด (ไกลสุด)", "Rearmost"), 8: ("สุ่ม", "Random"), 14: ("PATK สูงสุด", "Highest P.ATK"), 16: ("MATK สูงสุด", "Highest M.ATK"),
-        5: ("HP ต่ำสุด", "Lowest HP"), 6: ("HP สูงสุด", "Highest HP"), 20: ("ตัวโจมตีกายภาพ", "Physical attackers"), 21: ("ตัวโจมตีเวท", "Magic attackers"),
-        45: ("PDEF ต่ำสุด", "Lowest P.DEF"), 46: ("MDEF ต่ำสุด", "Lowest M.DEF")}
+        5: ("HP ต่ำสุด?", "Lowest HP?"), 6: ("HP สูงสุด?", "Highest HP?"), 20: ("ผู้โจมตีกายภาพ", "Physical attackers"), 21: ("ผู้โจมตีเวท?", "Magic attackers?")}
 
 
 _COND_CACHE = {"mt": None, "data": {}}
@@ -1050,6 +1092,9 @@ def decode_action(a, marks=None):
         else:
             r["name"] = tt(*ACTION_NAME[77]) if 77 in ACTION_NAME else tt("แอ็กชันชนิด %d", "Action type %d") % t
             r["formula"] = "d=(%s,%s,%s) " % (d1, d2, d3) + ", ".join("v%d=%s" % (i + 1, fmtn(x)) for i, x in enumerate(v) if x)
+    elif t == 46 and d1 == 1 and d2 in (1, 2) and v[0]:
+        r["name"] = tt("ดาเมจกายภาพตามสัดส่วน", "Physical percentage damage") if d2 == 1 else tt("ดาเมจเวทตามสัดส่วน", "Magic percentage damage")
+        r["formula"] = tt("%s%% ของ HP สูงสุดของเป้าหมาย", "%s%% of the target's maximum HP") % fmtn(v[0]) + ((tt(" (สูงสุด %s)", " (maximum %s)") % fmtn(v[2])) if v[2] else "")
     elif t == 49:
         r["name"] = {10: tt("ลบบาเรียศัตรู", "Remove enemy barriers"), 1: tt("ล้างบัฟ", "Dispel buffs"), 2: tt("ล้างดีบัฟ", "Dispel debuffs")}.get(d1, tt("ล้างสถานะ (ชนิด %d)", "Dispel (kind %d)") % d1)
     elif t in (11, 12, 13, 20, 21):
@@ -1079,6 +1124,8 @@ def fold_pass(a26, trow, marks):
     d2 = int(a26.get("action_detail_2") or 1); ta = trow["a"]
     base = ta.get("action_value_%d" % max(d2, 1)) or 0 if d2 == 1 else (ta.get("action_value_%d" % d2) or 0)
     coef, cap, src = v[1], v[3], int(v[0])
+    if src == 0:
+        return "%s + %s * %s" % (trow["formula"], tt("HP ปัจจุบัน", "Current HP"), fmtn(coef))
     if src >= 2000:
         mk = (marks or {}).get(src - 2000, "[#%d]" % (src - 2000))
         extra = "%s * %s %s" % (fmtn(coef), tt("การใช้", "Consumption"), mk)
@@ -1376,8 +1423,12 @@ class CharTab(QWidget):
     def refresh_names(self):
         from PySide6.QtWidgets import QCompleter
         self.ids = sorted(self.win.db.names)
-        items = ["%d  %s" % (i, self.win.db.names[i]) for i in self.ids]
-        comp = QCompleter(items, self); comp.setCaseSensitivity(Qt.CaseInsensitive); comp.setFilterMode(Qt.MatchContains); self.ed.setCompleter(comp)
+        from PySide6.QtGui import QStandardItem, QStandardItemModel
+        db = self.win.db; model = QStandardItemModel(self)
+        for i in self.ids:       # แสดง "id  ชื่อ" เหมือนเดิม แต่ค้นหาจากข้อความใน UserRole (ชื่อ + ชื่อญี่ปุ่น + คีย์เวิร์ด)
+            it = QStandardItem("%d  %s" % (i, db.names[i])); it.setData("%d  %s  %s" % (i, db.names[i], db.extra.get(i, "")), Qt.UserRole); model.appendRow(it)
+        comp = QCompleter(model, self); comp.setCompletionRole(Qt.UserRole)
+        comp.setCaseSensitivity(Qt.CaseInsensitive); comp.setFilterMode(Qt.MatchContains); self.ed.setCompleter(comp)
         comp.activated.connect(lambda t: self.show_uid(int(t.split()[0])))
         comp.setMaxVisibleItems(12); self.style_popup(comp)
 
@@ -1394,8 +1445,8 @@ class CharTab(QWidget):
         if not t: return
         m = re.match(r"^(\d{4,7})", t)
         if m: return self.show_uid(int(m.group(1)))
-        tl = t.lower(); names = self.win.db.names
-        hits = [i for i in self.ids if tl in names[i].lower()]
+        tl = _nk(t); names = self.win.db.names
+        hits = [i for i in self.ids if tl in self.win.db.sblob.get(i, names[i].casefold())]
         if not hits:  # ลองชื่อญี่ปุ่น
             try:
                 c = self.win.db.connect()
@@ -1655,7 +1706,7 @@ class Palette(QDialog):
         def add(text, data):
             it = QListWidgetItem(text); it.setData(Qt.UserRole, data); self.lst.addItem(it)
         if len(t) >= 2:
-            ch = [i for i, n in self.win.db.names.items() if t in n.lower() or t == str(i)][:6]
+            ch = [i for i, n in self.win.db.names.items() if _nk(t) in self.win.db.sblob.get(i, n.casefold()) or t == str(i)][:6]
             for i in ch: add(tt("🗺 ตัวละคร: %s  (%d)", "🗺 Character: %s  (%d)") % (self.win.db.names[i], i), ("char", i))
         for x in ts[:60]:
             add(("⭐ " if x["name"] in self.win.fav else "") + x["name"] + "      " + f"{x['rows']:,} " + tt("แถว", "rows"), ("table", x["name"]))
@@ -1806,7 +1857,7 @@ class Main(QMainWindow):
         self.chartab.refresh_names(); self.chartab.placeholder()
         self.recent = []; self.chip.setText(tt("%s  ·  %.1f MB  ·  %d ตาราง", "%s  ·  %.1f MB  ·  %d tables") % (os.path.basename(p), self.db.size / 1e6, len(self.db.tables))); self.chip.setToolTip(p)
         self.setWindowTitle("%s — %s" % (APP, os.path.basename(p)))
-        self.fill_tree(); self.home.refresh(); self.tabs.setCurrentIndex(0); self.status(tt("เปิดแล้ว: ", "Opened: ") + p)
+        self.fill_tree(); self.home.refresh(); self.tabs.setCurrentIndex(0); self.status(tt("เปิดแล้ว: ", "Opened: ") + p + ((" · " + tt("คีย์เวิร์ดชื่อตัวละคร %d ตัว", "%d character name keyword sets") % sum(1 for v in self.db.aliases.values() if v)) if self.db.alias_file else ""))
 
     def reload(self):
         if self.db.path: self.open_db(self.db.path)
@@ -1939,19 +1990,8 @@ class Main(QMainWindow):
             if u.isLocalFile(): self.open_db(u.toLocalFile()); break
 
 
-def res_path(name):
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, name)
-
-
 def main():
-    if sys.platform == "win32":  # ให้ไอคอนบน taskbar เป็นของโปรแกรมเอง ไม่ใช่ของ python
-        try:
-            import ctypes; ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DBExplorer.Muimi")
-        except Exception: pass
     app = QApplication(sys.argv); app.setApplicationName(APP)
-    ico = res_path("muimi.ico")
-    if os.path.isfile(ico): app.setWindowIcon(QIcon(ico))
     w = Main(); w.show()
     path = sys.argv[1] if len(sys.argv) > 1 else None
     if path: w.open_db(path)
